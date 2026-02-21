@@ -182,3 +182,27 @@ Questions? Ideas? [Join the Discord](https://discord.gg/VDdww8qS42).
 ## License
 
 MIT
+
+## Fork Notes (JohnKruse)
+
+This fork is maintained for a Telegram-first Docker deployment.
+
+### Local changes in this fork
+
+- Telegram channel support applied from `.claude/skills/add-telegram`
+- Runtime alignment to Docker startup path in `src/index.ts` (uses `src/container-runtime.ts` abstraction)
+- Main channel registered to Telegram JID format (`tg:<chat_id>`)
+
+### Remotes
+
+- `origin`: `git@github.com:JohnKruse/nanoclaw.git`
+- `upstream`: `https://github.com/qwibitai/nanoclaw.git`
+
+### Keep fork in sync with upstream
+
+```bash
+cd /Users/john/Documents/nanoclaw
+./scripts/sync-upstream.sh
+```
+
+This script fetches upstream, merges `upstream/main` into local `main`, and pushes to your fork.
