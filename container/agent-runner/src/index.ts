@@ -67,9 +67,28 @@ interface OpenRouterConfig {
   title?: string;
 }
 
+interface GmailOAuthCredentials {
+  refresh_token?: string;
+  client_id?: string;
+  client_secret?: string;
+  token_uri?: string;
+}
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+
+function readMemoryMarkdown(dirPath: string): string | undefined {
+  const preferred = path.join(dirPath, 'MEMORY.md');
+  const legacy = path.join(dirPath, 'CLAUDE.md');
+  if (fs.existsSync(preferred)) {
+    return fs.readFileSync(preferred, 'utf-8');
+  }
+  if (fs.existsSync(legacy)) {
+    return fs.readFileSync(legacy, 'utf-8');
+  }
+  return undefined;
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -407,12 +426,15 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  // Provider-neutral memory loading: prefer MEMORY.md, fallback to CLAUDE.md
+  const memoryParts: string[] = [];
+  const groupMemory = readMemoryMarkdown('/workspace/group');
+  if (groupMemory?.trim()) memoryParts.push(groupMemory);
+  if (!containerInput.isMain) {
+    const globalMemory = readMemoryMarkdown('/workspace/global');
+    if (globalMemory?.trim()) memoryParts.push(globalMemory);
   }
+  const mergedMemory = memoryParts.length > 0 ? memoryParts.join('\n\n') : undefined;
 
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
@@ -437,8 +459,8 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      systemPrompt: mergedMemory
+        ? { type: 'preset' as const, preset: 'claude_code' as const, append: mergedMemory }
         : undefined,
       allowedTools: [
         'Bash',
@@ -448,7 +470,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__gmail__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -463,6 +486,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        gmail: {
+          command: 'npx',
+          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
         },
       },
       hooks: {
@@ -557,6 +584,85 @@ async function runOpenRouterTurn(
   return text;
 }
 
+function shouldHandleGmailDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksEmail = /\b(gmail|email|inbox)\b/.test(p);
+  const asksRead = /\b(check|read|list|show|unread|latest|new)\b/.test(p);
+  return asksEmail && asksRead;
+}
+
+function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
+  if (!headers) return '';
+  return headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+}
+
+async function refreshGmailAccessToken(creds: GmailOAuthCredentials): Promise<string> {
+  const tokenUri = creds.token_uri || 'https://oauth2.googleapis.com/token';
+  if (!creds.refresh_token || !creds.client_id || !creds.client_secret) {
+    throw new Error('Missing refresh_token/client_id/client_secret in ~/.gmail-mcp/credentials.json');
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: creds.refresh_token,
+    client_id: creds.client_id,
+    client_secret: creds.client_secret,
+  });
+
+  const response = await fetch(tokenUri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(`OAuth refresh failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  }
+  const data = await response.json() as { access_token?: string };
+  if (!data.access_token) throw new Error('OAuth refresh did not return access_token');
+  return data.access_token;
+}
+
+async function runDirectGmailUnread(limit = 5): Promise<string> {
+  const credsPath = '/home/node/.gmail-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Gmail credentials not found at ~/.gmail-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const listResp = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=${limit}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!listResp.ok) {
+    throw new Error(`Gmail list failed (${listResp.status}): ${(await listResp.text()).slice(0, 300)}`);
+  }
+  const listData = await listResp.json() as { messages?: Array<{ id: string }> };
+  const messages = listData.messages || [];
+  if (messages.length === 0) {
+    return 'No unread Gmail messages.';
+  }
+
+  const lines: string[] = [`Unread Gmail messages (${messages.length}):`];
+  for (const msg of messages) {
+    const metaResp = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!metaResp.ok) {
+      lines.push(`- ${msg.id}: [metadata fetch failed ${metaResp.status}]`);
+      continue;
+    }
+    const meta = await metaResp.json() as { payload?: { headers?: Array<{ name: string; value: string }> } };
+    const headers = meta.payload?.headers;
+    const from = getHeader(headers, 'From') || '(unknown sender)';
+    const subject = getHeader(headers, 'Subject') || '(no subject)';
+    const date = getHeader(headers, 'Date') || '(no date)';
+    lines.push(`- ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${date}`);
+  }
+  return lines.join('\n');
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -610,19 +716,27 @@ async function main(): Promise<void> {
     log(`Using OpenRouter provider with model: ${openRouterConfig.model}`);
 
     const messages: OpenRouterMessage[] = [];
-    const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-    if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-      const globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-      if (globalClaudeMd.trim()) {
-        messages.push({ role: 'system', content: globalClaudeMd });
-      }
+    const memoryParts: string[] = [];
+    const groupMemory = readMemoryMarkdown('/workspace/group');
+    if (groupMemory?.trim()) memoryParts.push(groupMemory);
+    if (!containerInput.isMain) {
+      const globalMemory = readMemoryMarkdown('/workspace/global');
+      if (globalMemory?.trim()) memoryParts.push(globalMemory);
+    }
+    if (memoryParts.length > 0) {
+      messages.push({ role: 'system', content: memoryParts.join('\n\n') });
     }
 
     try {
       while (true) {
-        messages.push({ role: 'user', content: prompt });
-        const result = await runOpenRouterTurn(messages, openRouterConfig);
-        messages.push({ role: 'assistant', content: result });
+        let result: string;
+        if (shouldHandleGmailDirectly(prompt)) {
+          result = await runDirectGmailUnread(5);
+        } else {
+          messages.push({ role: 'user', content: prompt });
+          result = await runOpenRouterTurn(messages, openRouterConfig);
+          messages.push({ role: 'assistant', content: result });
+        }
 
         writeOutput({
           status: 'success',

@@ -201,7 +201,20 @@ Read `/workspace/project/data/registered_groups.json` and format it nicely.
 
 ## Global Memory
 
-You can read and write to `/workspace/project/groups/global/CLAUDE.md` for facts that should apply to all groups. Only update global memory when explicitly asked to "remember this globally" or similar.
+You can read and write to `/workspace/project/groups/global/MEMORY.md` for facts that should apply to all groups. Only update global memory when explicitly asked to "remember this globally" or similar.
+
+---
+
+## Email (Gmail)
+
+You have access to Gmail via MCP tools:
+- `mcp__gmail__search_emails` - Search emails with query
+- `mcp__gmail__get_email` - Get full email content by ID
+- `mcp__gmail__send_email` - Send an email
+- `mcp__gmail__draft_email` - Create a draft
+- `mcp__gmail__list_labels` - List available labels
+
+Use these tools first for inbox/email requests before giving generic guidance.
 
 ---
 

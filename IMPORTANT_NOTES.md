@@ -31,6 +31,14 @@ When important changes happen, add a short note here.
   - Default model set to `openai/gpt-5-nano`.
   - Anthropic credentials are now optional fallback only.
 
+- Memory files are now provider-neutral:
+  - Runner prefers `MEMORY.md` and falls back to `CLAUDE.md` for compatibility.
+  - `groups/main/MEMORY.md` and `groups/global/MEMORY.md` were created.
+
+- Gmail OAuth files were migrated from PicoClaw:
+  - `~/.gmail-mcp/gcp-oauth.keys.json`
+  - `~/.gmail-mcp/credentials.json`
+
 ## Syncing Your Fork With Upstream
 
 Use:

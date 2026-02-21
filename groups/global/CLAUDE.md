@@ -47,6 +47,19 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
+## Email (Gmail)
+
+You have access to Gmail via MCP tools:
+- `mcp__gmail__search_emails` - Search emails with query
+- `mcp__gmail__get_email` - Get full email content by ID
+- `mcp__gmail__send_email` - Send an email
+- `mcp__gmail__draft_email` - Create a draft
+- `mcp__gmail__list_labels` - List available labels
+
+Example requests:
+- "Check my unread emails from today"
+- "Send an email to john@example.com about the meeting"
+
 ## Message Formatting
 
 NEVER use markdown. Only use WhatsApp/Telegram formatting:
