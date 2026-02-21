@@ -218,6 +218,18 @@ Use these tools first for inbox/email requests before giving generic guidance.
 
 ---
 
+## Calendar (Google Calendar)
+
+For calendar requests, execute actions directly when possible.
+
+- For event creation, require explicit timestamps.
+  Example: `create calendar event title: "Parent Meeting" start: 2026-02-23T09:00 end: 2026-02-23T10:00`
+- After creating an event, report the created event ID (and link if available).
+- Never claim calendar creation succeeded unless there is a returned event ID.
+- For availability/upcoming requests, list actual upcoming events from Google Calendar.
+
+---
+
 ## Scheduling for Other Groups
 
 When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups.json`:

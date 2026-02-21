@@ -39,6 +39,14 @@ When important changes happen, add a short note here.
   - `~/.gmail-mcp/gcp-oauth.keys.json`
   - `~/.gmail-mcp/credentials.json`
 
+- Google Calendar OAuth files were migrated from PicoClaw:
+  - `~/.gcalendar-mcp/gcp-oauth.keys.json`
+  - `~/.gcalendar-mcp/credentials.json`
+
+- OpenRouter mode now has deterministic Calendar handlers:
+  - list upcoming events
+  - create events when prompt includes explicit `start:` and `end:` timestamps
+
 ## Syncing Your Fork With Upstream
 
 Use:

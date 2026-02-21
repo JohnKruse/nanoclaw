@@ -80,6 +80,13 @@ interface ParsedSendEmailIntent {
   body: string;
 }
 
+interface ParsedCalendarCreateIntent {
+  summary: string;
+  startIso: string;
+  endIso: string;
+  timezone: string;
+}
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
@@ -609,6 +616,20 @@ function shouldHandleGmailSentSearchDirectly(prompt: string): boolean {
   return /\b(gmail|email|mail)\b/.test(p) && /\b(sent|draft)\b/.test(p) && /\b(check|search|find|show|look)\b/.test(p);
 }
 
+function shouldHandleCalendarListDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksCalendar = /\b(calendar|events?)\b/.test(p);
+  const asksList = /\b(show|list|upcoming|today|tomorrow|next)\b/.test(p);
+  return asksCalendar && asksList;
+}
+
+function shouldHandleCalendarCreateDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksCalendar = /\b(calendar|event)\b/.test(p);
+  const asksCreate = /\b(create|add|schedule|book)\b/.test(p);
+  return asksCalendar && asksCreate;
+}
+
 function parseSendEmailIntent(prompt: string): ParsedSendEmailIntent | null {
   const toMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   if (!toMatch) return null;
@@ -623,6 +644,29 @@ function parseSendEmailIntent(prompt: string): ParsedSendEmailIntent | null {
   const body = (quotedBody?.[1] || unquotedBody?.[1] || 'Hi John, this is a test email from Stella.').trim();
 
   return { to, subject, body };
+}
+
+function parseCalendarCreateIntent(prompt: string, timezone: string): ParsedCalendarCreateIntent | null {
+  const summaryQuoted = prompt.match(/(?:title|summary|event)\s*[:=]\s*["“](.+?)["”]/i);
+  const summaryUnquoted = prompt.match(/(?:title|summary|event)\s*[:=]\s*([^\n]+)/i);
+  const summary = (summaryQuoted?.[1] || summaryUnquoted?.[1] || 'New event').trim();
+
+  const startMatch = prompt.match(/start\s*[:=]\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:[0-9]{2})?)/i);
+  const endMatch = prompt.match(/end\s*[:=]\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:[0-9]{2})?)/i);
+
+  if (!startMatch || !endMatch) return null;
+
+  const normalize = (v: string): string => {
+    const t = v.trim().replace(' ', 'T');
+    return /(?:Z|[+-][0-9]{2}:[0-9]{2})$/.test(t) ? t : `${t}:00`;
+  };
+
+  return {
+    summary,
+    startIso: normalize(startMatch[1]),
+    endIso: normalize(endMatch[1]),
+    timezone,
+  };
 }
 
 function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
@@ -778,6 +822,72 @@ async function runDirectGmailSentSearch(recipient: string, limit = 5): Promise<s
   return lines.join('\n');
 }
 
+async function runDirectCalendarList(limit = 10): Promise<string> {
+  const credsPath = '/home/node/.gcalendar-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Google Calendar credentials not found at ~/.gcalendar-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const timeMin = new Date().toISOString();
+  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&singleEvents=true&orderBy=startTime&maxResults=${limit}`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Calendar list failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  }
+  const data = await response.json() as {
+    items?: Array<{ id?: string; summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }>;
+  };
+  const items = data.items || [];
+  if (items.length === 0) return 'No upcoming events found on primary Google Calendar.';
+
+  const lines: string[] = [`Upcoming calendar events (${items.length}):`];
+  for (const ev of items) {
+    const start = ev.start?.dateTime || ev.start?.date || '(no start)';
+    const end = ev.end?.dateTime || ev.end?.date || '(no end)';
+    lines.push(`- ${ev.id || 'unknown'} | ${ev.summary || '(no title)'} | ${start} -> ${end}`);
+  }
+  return lines.join('\n');
+}
+
+async function runDirectCalendarCreate(intent: ParsedCalendarCreateIntent): Promise<string> {
+  const credsPath = '/home/node/.gcalendar-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Google Calendar credentials not found at ~/.gcalendar-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const payload = {
+    summary: intent.summary,
+    start: { dateTime: intent.startIso, timeZone: intent.timezone },
+    end: { dateTime: intent.endIso, timeZone: intent.timezone },
+  };
+  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Calendar create failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  }
+  const data = await response.json() as { id?: string; htmlLink?: string };
+  return [
+    'Calendar event created successfully.',
+    `- ID: ${data.id || 'unknown'}`,
+    `- Title: ${intent.summary}`,
+    `- Start: ${intent.startIso}`,
+    `- End: ${intent.endIso}`,
+    data.htmlLink ? `- Link: ${data.htmlLink}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -845,7 +955,20 @@ async function main(): Promise<void> {
     try {
       while (true) {
         let result: string;
-        if (shouldHandleGmailSendDirectly(prompt)) {
+        if (shouldHandleCalendarCreateDirectly(prompt)) {
+          const tz = process.env.TZ || 'Europe/Rome';
+          const intent = parseCalendarCreateIntent(prompt, tz);
+          if (!intent) {
+            result = [
+              'I need explicit start/end timestamps to create the event.',
+              'Example: create calendar event title: "Parent Meeting" start: 2026-02-23T09:00 end: 2026-02-23T10:00',
+            ].join('\n');
+          } else {
+            result = await runDirectCalendarCreate(intent);
+          }
+        } else if (shouldHandleCalendarListDirectly(prompt)) {
+          result = await runDirectCalendarList(10);
+        } else if (shouldHandleGmailSendDirectly(prompt)) {
           const intent = parseSendEmailIntent(prompt);
           if (!intent) {
             result = 'I need a recipient email address to send. Example: send a test email to name@example.com';
