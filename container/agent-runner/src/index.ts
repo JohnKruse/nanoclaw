@@ -619,7 +619,7 @@ function shouldHandleGmailSentSearchDirectly(prompt: string): boolean {
 function shouldHandleCalendarListDirectly(prompt: string): boolean {
   const p = prompt.toLowerCase();
   const asksCalendar = /\b(calendar|events?)\b/.test(p);
-  const asksList = /\b(show|list|upcoming|today|tomorrow|next)\b/.test(p);
+  const asksList = /\b(show|list|upcoming|today|tomorrow|next|for)\b/.test(p);
   return asksCalendar && asksList;
 }
 
@@ -635,6 +635,13 @@ function shouldHandleCalendarHealthDirectly(prompt: string): boolean {
   const asksCalendar = /\bgoogle calendar|calendar\b/.test(p);
   const asksHealth = /\b(work|working|access|connected|setup|set up|status|fix)\b/.test(p);
   return asksCalendar && asksHealth;
+}
+
+function shouldHandleCalendarListCalendarsDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksCalendar = /\bcalendar|calendars|google calendar\b/.test(p);
+  const asksListCalendars = /\bshared calendars|which calendars|what calendars|list calendars|available calendars\b/.test(p);
+  return asksCalendar && asksListCalendars;
 }
 
 function parseSendEmailIntent(prompt: string): ParsedSendEmailIntent | null {
@@ -674,6 +681,20 @@ function parseCalendarCreateIntent(prompt: string, timezone: string): ParsedCale
     endIso: normalize(endMatch[1]),
     timezone,
   };
+}
+
+function parseCalendarWindowDays(prompt: string): number {
+  const p = prompt.toLowerCase();
+  if (/\btoday\b/.test(p)) return 1;
+  if (/\btomorrow\b/.test(p)) return 2;
+  const explicit = p.match(/\bnext\s+(\d+)\s+days?\b/);
+  if (explicit) {
+    const n = Number(explicit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 60) return n;
+  }
+  if (/\bnext\s+week\b/.test(p)) return 7;
+  if (/\bnext\b/.test(p)) return 7;
+  return 3;
 }
 
 function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
@@ -829,7 +850,7 @@ async function runDirectGmailSentSearch(recipient: string, limit = 5): Promise<s
   return lines.join('\n');
 }
 
-async function runDirectCalendarList(limit = 10): Promise<string> {
+async function runDirectCalendarList(windowDays: number, limit = 25): Promise<string> {
   const credsPath = '/home/node/.gcalendar-mcp/credentials.json';
   if (!fs.existsSync(credsPath)) {
     throw new Error('Google Calendar credentials not found at ~/.gcalendar-mcp/credentials.json');
@@ -838,7 +859,8 @@ async function runDirectCalendarList(limit = 10): Promise<string> {
   const accessToken = await refreshGmailAccessToken(creds);
 
   const timeMin = new Date().toISOString();
-  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&singleEvents=true&orderBy=startTime&maxResults=${limit}`;
+  const timeMax = new Date(Date.now() + windowDays * 24 * 60 * 60 * 1000).toISOString();
+  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime&maxResults=${limit}`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -849,9 +871,9 @@ async function runDirectCalendarList(limit = 10): Promise<string> {
     items?: Array<{ id?: string; summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }>;
   };
   const items = data.items || [];
-  if (items.length === 0) return 'No upcoming events found on primary Google Calendar.';
+  if (items.length === 0) return `No calendar events found in the next ${windowDays} day(s).`;
 
-  const lines: string[] = [`Upcoming calendar events (${items.length}):`];
+  const lines: string[] = [`Calendar events for next ${windowDays} day(s) (${items.length}):`];
   for (const ev of items) {
     const start = ev.start?.dateTime || ev.start?.date || '(no start)';
     const end = ev.end?.dateTime || ev.end?.date || '(no end)';
@@ -986,7 +1008,9 @@ async function main(): Promise<void> {
     try {
       while (true) {
         let result: string;
-        if (shouldHandleCalendarHealthDirectly(prompt)) {
+        if (shouldHandleCalendarListCalendarsDirectly(prompt)) {
+          result = await runDirectCalendarHealthCheck();
+        } else if (shouldHandleCalendarHealthDirectly(prompt)) {
           result = await runDirectCalendarHealthCheck();
         } else if (shouldHandleCalendarCreateDirectly(prompt)) {
           const tz = process.env.TZ || 'Europe/Rome';
@@ -1000,7 +1024,8 @@ async function main(): Promise<void> {
             result = await runDirectCalendarCreate(intent);
           }
         } else if (shouldHandleCalendarListDirectly(prompt)) {
-          result = await runDirectCalendarList(10);
+          const windowDays = parseCalendarWindowDays(prompt);
+          result = await runDirectCalendarList(windowDays, 25);
         } else if (shouldHandleGmailSendDirectly(prompt)) {
           const intent = parseSendEmailIntent(prompt);
           if (!intent) {
