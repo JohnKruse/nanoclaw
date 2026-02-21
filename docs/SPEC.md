@@ -225,22 +225,29 @@ Additional mounts appear at `/workspace/extra/{containerPath}` inside the contai
 
 **Mount syntax note:** Read-write mounts use `-v host:container`, but readonly mounts require `--mount "type=bind,source=...,target=...,readonly"` (the `:ro` suffix may not work on all runtimes).
 
-### Claude Authentication
+### Provider Authentication
 
-Configure authentication in a `.env` file in the project root. Two options:
+Configure authentication in a `.env` file in the project root.
 
-**Option 1: Claude Subscription (OAuth token)**
+**Option 1: OpenRouter (recommended)**
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openai/gpt-5-nano
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
+
+**Option 2: Claude Subscription (OAuth token)**
 ```bash
 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 ```
 The token can be extracted from `~/.claude/.credentials.json` if you're logged in to Claude Code.
 
-**Option 2: Pay-per-use API Key**
+**Option 3: Anthropic API Key**
 ```bash
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because some container runtimes lose `-e` environment variables when using `-i` (interactive mode with piped stdin).
+Only provider variables (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENROUTER_*`) are extracted from `.env` and passed to the container through stdin input (not as global process environment). This ensures unrelated environment variables are not exposed to the agent runtime.
 
 ### Changing the Assistant Name
 

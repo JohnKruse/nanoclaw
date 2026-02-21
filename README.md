@@ -192,6 +192,19 @@ This fork is maintained for a Telegram-first Docker deployment.
 - Telegram channel support applied from `.claude/skills/add-telegram`
 - Runtime alignment to Docker startup path in `src/index.ts` (uses `src/container-runtime.ts` abstraction)
 - Main channel registered to Telegram JID format (`tg:<chat_id>`)
+- OpenRouter-first provider path in `container/agent-runner/src/index.ts` using `OPENROUTER_API_KEY`
+
+### OpenRouter env (fork default)
+
+Set these in `.env`:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openai/gpt-5-nano
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
+
+If `OPENROUTER_API_KEY` is set, the runner uses OpenRouter mode. If not, it falls back to Claude Agent SDK auth (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`).
 
 ### Remotes
 

@@ -73,10 +73,18 @@ Messages and task operations are verified against group identity:
 **Credential Filtering:**
 Only these environment variables are exposed to containers:
 ```typescript
-const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
+const allowedVars = [
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_MODEL',
+  'OPENROUTER_BASE_URL',
+  'OPENROUTER_HTTP_REFERER',
+  'OPENROUTER_TITLE',
+];
 ```
 
-> **Note:** Anthropic credentials are mounted so that Claude Code can authenticate when the agent runs. However, this means the agent itself can discover these credentials via Bash or file operations. Ideally, Claude Code would authenticate without exposing credentials to the agent's execution environment, but I couldn't figure this out. **PRs welcome** if you have ideas for credential isolation.
+> **Note:** Provider credentials are mounted so the agent runtime can authenticate when it runs. That also means the agent can discover those credentials via Bash or file operations. Ideally credentials would be brokered by the host process only, without direct visibility from the agent runtime.
 
 ## Privilege Comparison
 

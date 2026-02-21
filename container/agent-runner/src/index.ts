@@ -54,6 +54,19 @@ interface SDKUserMessage {
   session_id: string;
 }
 
+interface OpenRouterMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+interface OpenRouterConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  httpReferer?: string;
+  title?: string;
+}
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
@@ -187,7 +200,11 @@ function createPreCompactHook(): HookCallback {
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+const SECRET_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENROUTER_API_KEY',
+];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -489,6 +506,57 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+function getOpenRouterConfig(sdkEnv: Record<string, string | undefined>): OpenRouterConfig | null {
+  const apiKey = sdkEnv.OPENROUTER_API_KEY;
+  if (!apiKey) return null;
+
+  const baseUrl = (sdkEnv.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+  const model = sdkEnv.OPENROUTER_MODEL || 'openai/gpt-5-nano';
+
+  return {
+    apiKey,
+    model,
+    baseUrl,
+    httpReferer: sdkEnv.OPENROUTER_HTTP_REFERER,
+    title: sdkEnv.OPENROUTER_TITLE,
+  };
+}
+
+async function runOpenRouterTurn(
+  messages: OpenRouterMessage[],
+  config: OpenRouterConfig,
+): Promise<string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  if (config.httpReferer) headers['HTTP-Referer'] = config.httpReferer;
+  if (config.title) headers['X-Title'] = config.title;
+
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenRouter error ${response.status}: ${body.slice(0, 400)}`);
+  }
+
+  const payload = await response.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = payload.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error('OpenRouter returned no assistant content');
+  }
+  return text;
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -518,6 +586,9 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
+  if (!sessionId) {
+    sessionId = `session-${Date.now()}`;
+  }
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -532,6 +603,54 @@ async function main(): Promise<void> {
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
     prompt += '\n' + pending.join('\n');
+  }
+
+  const openRouterConfig = getOpenRouterConfig(sdkEnv);
+  if (openRouterConfig) {
+    log(`Using OpenRouter provider with model: ${openRouterConfig.model}`);
+
+    const messages: OpenRouterMessage[] = [];
+    const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+    if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
+      const globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+      if (globalClaudeMd.trim()) {
+        messages.push({ role: 'system', content: globalClaudeMd });
+      }
+    }
+
+    try {
+      while (true) {
+        messages.push({ role: 'user', content: prompt });
+        const result = await runOpenRouterTurn(messages, openRouterConfig);
+        messages.push({ role: 'assistant', content: result });
+
+        writeOutput({
+          status: 'success',
+          result,
+          newSessionId: sessionId,
+        });
+
+        writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+
+        const nextMessage = await waitForIpcMessage();
+        if (nextMessage === null) {
+          log('Close sentinel received, exiting OpenRouter loop');
+          break;
+        }
+        prompt = nextMessage;
+      }
+      return;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log(`OpenRouter error: ${errorMessage}`);
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId: sessionId,
+        error: errorMessage,
+      });
+      process.exit(1);
+    }
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
