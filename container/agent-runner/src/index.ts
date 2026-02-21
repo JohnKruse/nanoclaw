@@ -551,7 +551,7 @@ function getOpenRouterConfig(sdkEnv: Record<string, string | undefined>): OpenRo
   if (!apiKey) return null;
 
   const baseUrl = (sdkEnv.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const model = sdkEnv.OPENROUTER_MODEL || 'openai/gpt-5-nano';
+  const model = sdkEnv.OPENROUTER_MODEL || 'x-ai/grok-4.1-fast';
 
   return {
     apiKey,
