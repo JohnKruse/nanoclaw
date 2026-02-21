@@ -619,7 +619,7 @@ function shouldHandleGmailSentSearchDirectly(prompt: string): boolean {
 function shouldHandleCalendarListDirectly(prompt: string): boolean {
   const p = prompt.toLowerCase();
   const asksCalendar = /\b(calendar|events?)\b/.test(p);
-  const asksList = /\b(show|list|upcoming|today|tomorrow|next|for)\b/.test(p);
+  const asksList = /\b(show|list|upcoming|today|tomorrow|next|for)\b/.test(p) || p.includes('my calendar');
   return asksCalendar && asksList;
 }
 
@@ -690,6 +690,16 @@ function parseCalendarWindowDays(prompt: string): number {
   const explicit = p.match(/\bnext\s+(\d+)\s+days?\b/);
   if (explicit) {
     const n = Number(explicit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 60) return n;
+  }
+  const explicitFor = p.match(/\bfor\s+(\d+)\s+days?\b/);
+  if (explicitFor) {
+    const n = Number(explicitFor[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 60) return n;
+  }
+  const explicitBare = p.match(/\b(\d+)\s+days?\b/);
+  if (explicitBare) {
+    const n = Number(explicitBare[1]);
     if (Number.isFinite(n) && n >= 1 && n <= 60) return n;
   }
   if (/\bnext\s+week\b/.test(p)) return 7;
@@ -850,7 +860,7 @@ async function runDirectGmailSentSearch(recipient: string, limit = 5): Promise<s
   return lines.join('\n');
 }
 
-async function runDirectCalendarList(windowDays: number, limit = 25): Promise<string> {
+async function runDirectCalendarList(windowDays: number, perCalendarLimit = 50): Promise<string> {
   const credsPath = '/home/node/.gcalendar-mcp/credentials.json';
   if (!fs.existsSync(credsPath)) {
     throw new Error('Google Calendar credentials not found at ~/.gcalendar-mcp/credentials.json');
@@ -860,25 +870,69 @@ async function runDirectCalendarList(windowDays: number, limit = 25): Promise<st
 
   const timeMin = new Date().toISOString();
   const timeMax = new Date(Date.now() + windowDays * 24 * 60 * 60 * 1000).toISOString();
-  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime&maxResults=${limit}`;
-  const response = await fetch(url, {
+
+  const calendarListResp = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!response.ok) {
-    throw new Error(`Calendar list failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  if (!calendarListResp.ok) {
+    throw new Error(`Calendar list failed (${calendarListResp.status}): ${(await calendarListResp.text()).slice(0, 300)}`);
   }
-  const data = await response.json() as {
-    items?: Array<{ id?: string; summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }>;
+  const calendarsData = await calendarListResp.json() as {
+    items?: Array<{ id?: string }>;
   };
-  const items = data.items || [];
-  if (items.length === 0) return `No calendar events found in the next ${windowDays} day(s).`;
+  const calendarIds = (calendarsData.items || []).map(c => c.id).filter((v): v is string => Boolean(v));
 
-  const lines: string[] = [`Calendar events for next ${windowDays} day(s) (${items.length}):`];
-  for (const ev of items) {
-    const start = ev.start?.dateTime || ev.start?.date || '(no start)';
-    const end = ev.end?.dateTime || ev.end?.date || '(no end)';
-    lines.push(`- ${ev.id || 'unknown'} | ${ev.summary || '(no title)'} | ${start} -> ${end}`);
+  type EventRow = { sortStart: number; date: string; start: string; end: string; title: string };
+  const dedup = new Map<string, EventRow>();
+  const dateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.TZ || 'Europe/Rome', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const timeFmt = new Intl.DateTimeFormat('en-GB', { timeZone: process.env.TZ || 'Europe/Rome', hour: '2-digit', minute: '2-digit', hour12: false });
+
+  for (const calId of calendarIds) {
+    const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime&maxResults=${perCalendarLimit}`;
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!resp.ok) continue;
+    const data = await resp.json() as {
+      items?: Array<{ summary?: string; start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }>;
+    };
+
+    for (const ev of data.items || []) {
+      const summary = ev.summary || '(no title)';
+      const startRaw = ev.start?.dateTime || ev.start?.date;
+      const endRaw = ev.end?.dateTime || ev.end?.date;
+      if (!startRaw || !endRaw) continue;
+
+      let date = '';
+      let start = '';
+      let end = '';
+      let sortStart = 0;
+
+      if (ev.start?.dateTime && ev.end?.dateTime) {
+        const s = new Date(ev.start.dateTime);
+        const e = new Date(ev.end.dateTime);
+        date = dateFmt.format(s);
+        start = timeFmt.format(s);
+        end = timeFmt.format(e);
+        sortStart = s.getTime();
+      } else {
+        // All-day event
+        const s = new Date(`${ev.start?.date}T00:00:00`);
+        date = dateFmt.format(s);
+        start = 'All day';
+        end = 'All day';
+        sortStart = s.getTime();
+      }
+
+      const key = `${date}|${start}|${end}|${summary}`.toLowerCase();
+      dedup.set(key, { sortStart, date, start, end, title: summary });
+    }
   }
+
+  const rows = [...dedup.values()].sort((a, b) => a.sortStart - b.sortStart);
+  if (rows.length === 0) {
+    return `No calendar events found in the next ${windowDays} day(s).`;
+  }
+
+  const lines: string[] = rows.map(r => `${r.date}, ${r.start} - ${r.end}, ${r.title}`);
   return lines.join('\n');
 }
 
