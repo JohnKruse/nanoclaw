@@ -222,11 +222,23 @@ Use these tools first for inbox/email requests before giving generic guidance.
 
 For calendar requests, execute actions directly when possible.
 
+- A general calendar request means: include Stella's primary calendar AND all calendars shared with Stella.
+- Deduplicate duplicate entries and list results in strict chronological order.
+- Output format for each event must be exactly: `Date, Start - End Time, Title`.
 - For event creation, require explicit timestamps.
   Example: `create calendar event title: "Parent Meeting" start: 2026-02-23T09:00 end: 2026-02-23T10:00`
 - After creating an event, report the created event ID (and link if available).
 - Never claim calendar creation succeeded unless there is a returned event ID.
-- For availability/upcoming requests, list actual upcoming events from Google Calendar.
+- For availability/upcoming requests, list actual events from Google Calendar for the requested day window.
+
+---
+
+## Weather
+
+- For weather requests, execute directly using live weather data (Open-Meteo), not wttr.
+- If location is omitted, default to Turin, Italy.
+- If day window is omitted, default to 3-day forecast.
+- Return concise results with current conditions and daily forecast lines.
 
 ---
 

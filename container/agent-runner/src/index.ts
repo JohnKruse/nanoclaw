@@ -707,6 +707,108 @@ function parseCalendarWindowDays(prompt: string): number {
   return 3;
 }
 
+function shouldHandleWeatherDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksWeather = /\b(weather|forecast|temperature|rain|snow|wind)\b/.test(p);
+  return asksWeather;
+}
+
+function parseWeatherDays(prompt: string): number {
+  const p = prompt.toLowerCase();
+  if (/\btoday\b/.test(p)) return 1;
+  if (/\btomorrow\b/.test(p)) return 2;
+  const explicit = p.match(/\bnext\s+(\d+)\s+days?\b/);
+  if (explicit) {
+    const n = Number(explicit[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 14) return n;
+  }
+  const explicitFor = p.match(/\bfor\s+(\d+)\s+days?\b/);
+  if (explicitFor) {
+    const n = Number(explicitFor[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 14) return n;
+  }
+  if (/\bnext\s+week\b/.test(p)) return 7;
+  return 3;
+}
+
+function parseWeatherLocation(prompt: string): string {
+  const p = prompt.trim();
+
+  const inMatch = p.match(/\b(?:in|for|at)\s+([A-Za-z][A-Za-z\s,.'-]{1,80})$/i);
+  if (inMatch?.[1]) return inMatch[1].trim();
+
+  const beforeWeather = p.match(/^([A-Za-z][A-Za-z\s,.'-]{1,80})\s+(?:weather|forecast)\b/i);
+  if (beforeWeather?.[1]) return beforeWeather[1].trim();
+
+  // Personal default for this assistant
+  return 'Turin, Italy';
+}
+
+async function runDirectWeather(prompt: string): Promise<string> {
+  const location = parseWeatherLocation(prompt);
+  const days = parseWeatherDays(prompt);
+
+  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+  const geoResp = await fetch(geoUrl);
+  if (!geoResp.ok) {
+    throw new Error(`Weather geocoding failed (${geoResp.status})`);
+  }
+  const geoData = await geoResp.json() as {
+    results?: Array<{ name: string; country?: string; latitude: number; longitude: number; timezone?: string }>;
+  };
+  const place = geoData.results?.[0];
+  if (!place) {
+    return `I couldn't resolve a location for "${location}".`;
+  }
+
+  const tz = place.timezone || process.env.TZ || 'Europe/Rome';
+  const forecastUrl =
+    `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}` +
+    `&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,wind_speed_10m` +
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+    `&timezone=${encodeURIComponent(tz)}&forecast_days=${days}`;
+
+  const forecastResp = await fetch(forecastUrl);
+  if (!forecastResp.ok) {
+    throw new Error(`Weather forecast failed (${forecastResp.status})`);
+  }
+  const data = await forecastResp.json() as {
+    current?: {
+      temperature_2m?: number;
+      apparent_temperature?: number;
+      relative_humidity_2m?: number;
+      precipitation?: number;
+      wind_speed_10m?: number;
+    };
+    daily?: {
+      time?: string[];
+      temperature_2m_max?: number[];
+      temperature_2m_min?: number[];
+      precipitation_probability_max?: number[];
+    };
+  };
+
+  const lines: string[] = [];
+  lines.push(`Weather for ${place.name}${place.country ? `, ${place.country}` : ''}`);
+  if (data.current) {
+    lines.push(
+      `Now: ${data.current.temperature_2m ?? '?'}C (feels ${data.current.apparent_temperature ?? '?'}C), ` +
+      `humidity ${data.current.relative_humidity_2m ?? '?'}%, rain ${data.current.precipitation ?? '?'}mm, ` +
+      `wind ${data.current.wind_speed_10m ?? '?'} km/h`,
+    );
+  }
+
+  const times = data.daily?.time || [];
+  const tmax = data.daily?.temperature_2m_max || [];
+  const tmin = data.daily?.temperature_2m_min || [];
+  const pop = data.daily?.precipitation_probability_max || [];
+  for (let i = 0; i < times.length; i++) {
+    lines.push(`${times[i]}: ${tmin[i] ?? '?'}C to ${tmax[i] ?? '?'}C, rain chance ${pop[i] ?? '?'}%`);
+  }
+
+  return lines.join('\n');
+}
+
 function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
   if (!headers) return '';
   return headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
@@ -1062,7 +1164,9 @@ async function main(): Promise<void> {
     try {
       while (true) {
         let result: string;
-        if (shouldHandleCalendarListCalendarsDirectly(prompt)) {
+        if (shouldHandleWeatherDirectly(prompt)) {
+          result = await runDirectWeather(prompt);
+        } else if (shouldHandleCalendarListCalendarsDirectly(prompt)) {
           result = await runDirectCalendarHealthCheck();
         } else if (shouldHandleCalendarHealthDirectly(prompt)) {
           result = await runDirectCalendarHealthCheck();

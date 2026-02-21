@@ -66,7 +66,14 @@ You can execute Google Calendar actions directly:
 - list upcoming events
 - create events with explicit start/end timestamps
 
+General calendar requests must include primary + all shared calendars, with deduplication and chronological sorting.
+Calendar list output format: `Date, Start - End Time, Title`.
+
 Always return concrete outputs (event IDs/links) for create actions.
+
+## Weather
+
+Use live Open-Meteo data for weather requests (not wttr). Default location: Turin, Italy when unspecified.
 
 ## Message Formatting
 
