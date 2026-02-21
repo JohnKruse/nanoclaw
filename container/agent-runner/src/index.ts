@@ -74,6 +74,12 @@ interface GmailOAuthCredentials {
   token_uri?: string;
 }
 
+interface ParsedSendEmailIntent {
+  to: string;
+  subject: string;
+  body: string;
+}
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
@@ -591,6 +597,34 @@ function shouldHandleGmailDirectly(prompt: string): boolean {
   return asksEmail && asksRead;
 }
 
+function shouldHandleGmailSendDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksEmail = /\b(gmail|email|mail)\b/.test(p);
+  const asksSend = /\b(send|deliver)\b/.test(p);
+  return asksEmail && asksSend;
+}
+
+function shouldHandleGmailSentSearchDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  return /\b(gmail|email|mail)\b/.test(p) && /\b(sent|draft)\b/.test(p) && /\b(check|search|find|show|look)\b/.test(p);
+}
+
+function parseSendEmailIntent(prompt: string): ParsedSendEmailIntent | null {
+  const toMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (!toMatch) return null;
+  const to = toMatch[0];
+
+  const quotedSubject = prompt.match(/subject\s*[:=]\s*["“](.+?)["”]/i);
+  const unquotedSubject = prompt.match(/subject\s*[:=]\s*([^\n.]+)/i);
+  const subject = (quotedSubject?.[1] || unquotedSubject?.[1] || 'Test email from Stella').trim();
+
+  const quotedBody = prompt.match(/body\s*[:=]\s*["“]([\s\S]+?)["”]/i);
+  const unquotedBody = prompt.match(/body\s*[:=]\s*([^\n]+)/i);
+  const body = (quotedBody?.[1] || unquotedBody?.[1] || 'Hi John, this is a test email from Stella.').trim();
+
+  return { to, subject, body };
+}
+
 function getHeader(headers: Array<{ name: string; value: string }> | undefined, name: string): string {
   if (!headers) return '';
   return headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
@@ -663,6 +697,87 @@ async function runDirectGmailUnread(limit = 5): Promise<string> {
   return lines.join('\n');
 }
 
+function toBase64Url(input: string): string {
+  return Buffer.from(input, 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function runDirectGmailSend(to: string, subject: string, body: string): Promise<string> {
+  const credsPath = '/home/node/.gmail-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Gmail credentials not found at ~/.gmail-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const mime = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    '',
+    body,
+  ].join('\r\n');
+
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: toBase64Url(mime) }),
+  });
+  if (!response.ok) {
+    throw new Error(`Gmail send failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  }
+  const data = await response.json() as { id?: string };
+  return `Email sent successfully.\n- To: ${to}\n- Subject: ${subject}\n- Gmail Message ID: ${data.id || 'unknown'}`;
+}
+
+async function runDirectGmailSentSearch(recipient: string, limit = 5): Promise<string> {
+  const credsPath = '/home/node/.gmail-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Gmail credentials not found at ~/.gmail-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const q = encodeURIComponent(`in:sent to:${recipient}`);
+  const listResp = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${limit}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!listResp.ok) {
+    throw new Error(`Gmail sent-search failed (${listResp.status}): ${(await listResp.text()).slice(0, 300)}`);
+  }
+  const listData = await listResp.json() as { messages?: Array<{ id: string }> };
+  const messages = listData.messages || [];
+  if (messages.length === 0) {
+    return `No sent messages found for ${recipient}.`;
+  }
+
+  const lines: string[] = [`Sent messages to ${recipient} (${messages.length}):`];
+  for (const msg of messages) {
+    const metaResp = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!metaResp.ok) {
+      lines.push(`- ${msg.id}: [metadata fetch failed ${metaResp.status}]`);
+      continue;
+    }
+    const meta = await metaResp.json() as { payload?: { headers?: Array<{ name: string; value: string }> } };
+    const headers = meta.payload?.headers;
+    const to = getHeader(headers, 'To') || '(unknown recipient)';
+    const subject = getHeader(headers, 'Subject') || '(no subject)';
+    const date = getHeader(headers, 'Date') || '(no date)';
+    lines.push(`- ${msg.id} | To: ${to} | Subject: ${subject} | Date: ${date}`);
+  }
+  return lines.join('\n');
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -730,7 +845,21 @@ async function main(): Promise<void> {
     try {
       while (true) {
         let result: string;
-        if (shouldHandleGmailDirectly(prompt)) {
+        if (shouldHandleGmailSendDirectly(prompt)) {
+          const intent = parseSendEmailIntent(prompt);
+          if (!intent) {
+            result = 'I need a recipient email address to send. Example: send a test email to name@example.com';
+          } else {
+            result = await runDirectGmailSend(intent.to, intent.subject, intent.body);
+          }
+        } else if (shouldHandleGmailSentSearchDirectly(prompt)) {
+          const recipient = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+          if (!recipient) {
+            result = 'I need a recipient email address to search sent mail. Example: check sent mail to name@example.com';
+          } else {
+            result = await runDirectGmailSentSearch(recipient, 5);
+          }
+        } else if (shouldHandleGmailDirectly(prompt)) {
           result = await runDirectGmailUnread(5);
         } else {
           messages.push({ role: 'user', content: prompt });
