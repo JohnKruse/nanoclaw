@@ -630,6 +630,13 @@ function shouldHandleCalendarCreateDirectly(prompt: string): boolean {
   return asksCalendar && asksCreate;
 }
 
+function shouldHandleCalendarHealthDirectly(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  const asksCalendar = /\bgoogle calendar|calendar\b/.test(p);
+  const asksHealth = /\b(work|working|access|connected|setup|set up|status|fix)\b/.test(p);
+  return asksCalendar && asksHealth;
+}
+
 function parseSendEmailIntent(prompt: string): ParsedSendEmailIntent | null {
   const toMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   if (!toMatch) return null;
@@ -888,6 +895,30 @@ async function runDirectCalendarCreate(intent: ParsedCalendarCreateIntent): Prom
   ].filter(Boolean).join('\n');
 }
 
+async function runDirectCalendarHealthCheck(): Promise<string> {
+  const credsPath = '/home/node/.gcalendar-mcp/credentials.json';
+  if (!fs.existsSync(credsPath)) {
+    throw new Error('Google Calendar credentials not found at ~/.gcalendar-mcp/credentials.json');
+  }
+  const creds = JSON.parse(fs.readFileSync(credsPath, 'utf-8')) as GmailOAuthCredentials;
+  const accessToken = await refreshGmailAccessToken(creds);
+
+  const response = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Calendar health-check failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  }
+  const data = await response.json() as { items?: Array<{ id?: string; summary?: string }> };
+  const items = data.items || [];
+  const lines = [
+    'Google Calendar is connected and working.',
+    `Accessible calendars: ${items.length}`,
+    ...items.slice(0, 5).map(c => `- ${c.id || 'unknown'} | ${c.summary || '(no title)'}`),
+  ];
+  return lines.join('\n');
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -955,7 +986,9 @@ async function main(): Promise<void> {
     try {
       while (true) {
         let result: string;
-        if (shouldHandleCalendarCreateDirectly(prompt)) {
+        if (shouldHandleCalendarHealthDirectly(prompt)) {
+          result = await runDirectCalendarHealthCheck();
+        } else if (shouldHandleCalendarCreateDirectly(prompt)) {
           const tz = process.env.TZ || 'Europe/Rome';
           const intent = parseCalendarCreateIntent(prompt, tz);
           if (!intent) {
