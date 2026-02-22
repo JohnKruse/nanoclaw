@@ -44,6 +44,8 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
 
+Before loading any domain memory files, read `/workspace/group/memory_index.md` first.
+
 When you learn something important:
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders
