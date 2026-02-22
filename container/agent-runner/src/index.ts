@@ -91,25 +91,21 @@ const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
-function readMemoryMarkdown(dirPath: string): string | undefined {
-  const preferred = path.join(dirPath, 'MEMORY.md');
-  const legacy = path.join(dirPath, 'CLAUDE.md');
-  if (fs.existsSync(preferred)) {
-    return fs.readFileSync(preferred, 'utf-8');
-  }
-  if (fs.existsSync(legacy)) {
-    return fs.readFileSync(legacy, 'utf-8');
+function readClaudeMarkdown(dirPath: string): string | undefined {
+  const claudePath = path.join(dirPath, 'CLAUDE.md');
+  if (fs.existsSync(claudePath)) {
+    return fs.readFileSync(claudePath, 'utf-8');
   }
   return undefined;
 }
 
 function readGlobalMemoryForContext(): string | undefined {
   // Non-main groups get /workspace/global mounted read-only.
-  const fromSharedMount = readMemoryMarkdown('/workspace/global');
+  const fromSharedMount = readClaudeMarkdown('/workspace/global');
   if (fromSharedMount?.trim()) return fromSharedMount;
 
   // Main group has project root mounted, so global memory is under project/groups/global.
-  const fromProjectRoot = readMemoryMarkdown('/workspace/project/groups/global');
+  const fromProjectRoot = readClaudeMarkdown('/workspace/project/groups/global');
   if (fromProjectRoot?.trim()) return fromProjectRoot;
 
   return undefined;
@@ -451,9 +447,9 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
-  // Provider-neutral memory loading: prefer MEMORY.md, fallback to CLAUDE.md
+  // Load group + global CLAUDE.md context
   const memoryParts: string[] = [];
-  const groupMemory = readMemoryMarkdown('/workspace/group');
+  const groupMemory = readClaudeMarkdown('/workspace/group');
   if (groupMemory?.trim()) memoryParts.push(groupMemory);
   const globalMemory = readGlobalMemoryForContext();
   if (globalMemory?.trim()) memoryParts.push(globalMemory);
@@ -1161,7 +1157,7 @@ async function main(): Promise<void> {
 
     const messages: OpenRouterMessage[] = [];
     const memoryParts: string[] = [];
-    const groupMemory = readMemoryMarkdown('/workspace/group');
+    const groupMemory = readClaudeMarkdown('/workspace/group');
     if (groupMemory?.trim()) memoryParts.push(groupMemory);
     const globalMemory = readGlobalMemoryForContext();
     if (globalMemory?.trim()) memoryParts.push(globalMemory);
