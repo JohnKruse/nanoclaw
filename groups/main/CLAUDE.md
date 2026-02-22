@@ -49,6 +49,11 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
+Memory file routing (read on demand):
+- For family identity/background/history queries, read `/workspace/group/family.md`.
+- For contact details and outreach details, read `/workspace/group/contacts.md`.
+- Do not load large unrelated files unless needed for the active request.
+
 ## WhatsApp Formatting (and other messaging apps)
 
 Do NOT use markdown headings (##) in WhatsApp messages. Only use:
