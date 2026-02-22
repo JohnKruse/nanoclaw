@@ -103,6 +103,18 @@ function readMemoryMarkdown(dirPath: string): string | undefined {
   return undefined;
 }
 
+function readGlobalMemoryForContext(): string | undefined {
+  // Non-main groups get /workspace/global mounted read-only.
+  const fromSharedMount = readMemoryMarkdown('/workspace/global');
+  if (fromSharedMount?.trim()) return fromSharedMount;
+
+  // Main group has project root mounted, so global memory is under project/groups/global.
+  const fromProjectRoot = readMemoryMarkdown('/workspace/project/groups/global');
+  if (fromProjectRoot?.trim()) return fromProjectRoot;
+
+  return undefined;
+}
+
 /**
  * Push-based async iterable for streaming user messages to the SDK.
  * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
@@ -443,10 +455,8 @@ async function runQuery(
   const memoryParts: string[] = [];
   const groupMemory = readMemoryMarkdown('/workspace/group');
   if (groupMemory?.trim()) memoryParts.push(groupMemory);
-  if (!containerInput.isMain) {
-    const globalMemory = readMemoryMarkdown('/workspace/global');
-    if (globalMemory?.trim()) memoryParts.push(globalMemory);
-  }
+  const globalMemory = readGlobalMemoryForContext();
+  if (globalMemory?.trim()) memoryParts.push(globalMemory);
   const mergedMemory = memoryParts.length > 0 ? memoryParts.join('\n\n') : undefined;
 
   // Discover additional directories mounted at /workspace/extra/*
@@ -1153,10 +1163,8 @@ async function main(): Promise<void> {
     const memoryParts: string[] = [];
     const groupMemory = readMemoryMarkdown('/workspace/group');
     if (groupMemory?.trim()) memoryParts.push(groupMemory);
-    if (!containerInput.isMain) {
-      const globalMemory = readMemoryMarkdown('/workspace/global');
-      if (globalMemory?.trim()) memoryParts.push(globalMemory);
-    }
+    const globalMemory = readGlobalMemoryForContext();
+    if (globalMemory?.trim()) memoryParts.push(globalMemory);
     if (memoryParts.length > 0) {
       messages.push({ role: 'system', content: memoryParts.join('\n\n') });
     }
