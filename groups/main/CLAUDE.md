@@ -52,6 +52,7 @@ When you learn something important:
 - Keep an index in your memory for the files you create
 
 Memory file routing (read on demand):
+- For recurring output format requests (reports, emails, docs), read `/workspace/group/templates.md`.
 - For family identity/background/history queries, read `/workspace/group/family.md`.
 - For contact details and outreach details, read `/workspace/group/contacts.md`.
 - Do not load large unrelated files unless needed for the active request.
